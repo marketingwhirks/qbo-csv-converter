@@ -1,0 +1,6 @@
+[project]
+name = "qbo-csv-converter"
+version = "1.0.0"
+description = "QBO TransactionListWithSplits JSON to CSV converter"
+requires-python = ">=3.9"
+dependencies = []
