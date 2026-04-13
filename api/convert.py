@@ -6,6 +6,7 @@ Rows structure, and returns a CSV with 9 columns:
   Date, Transaction Type, Num, Posting, Name, Memo, Account, Class, Amount
 """
 
+from http.server import BaseHTTPRequestHandler
 import json
 import csv
 import io
@@ -16,74 +17,55 @@ def _extract_rows(row_list, results):
     if not row_list:
         return
     for row in row_list:
-        # Data rows have ColData with actual transaction values
         if "ColData" in row:
             col_data = row["ColData"]
             if col_data and len(col_data) > 0:
                 first_val = col_data[0].get("value", "")
-                # Skip summary/total rows
                 if first_val and "Total" not in first_val:
                     results.append([c.get("value", "") for c in col_data])
-        # Section rows have nested Rows.Row — recurse into them
         rows_obj = row.get("Rows")
         if rows_obj and "Row" in rows_obj:
             _extract_rows(rows_obj["Row"], results)
 
 
-def handler(request):
-    """Vercel Python serverless handler."""
-    if request.method == "OPTIONS":
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
-            "body": "",
-        }
+class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
-    if request.method != "POST":
-        return {
-            "statusCode": 405,
-            "body": json.dumps({"error": "POST only"}),
-        }
+    def do_POST(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            report = json.loads(body.decode("utf-8"))
+        except Exception as e:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Invalid JSON: {str(e)}"}).encode())
+            return
 
-    try:
-        body = request.body
-        if isinstance(body, bytes):
-            body = body.decode("utf-8")
-        report = json.loads(body)
-    except Exception as e:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": f"Invalid JSON: {str(e)}"}),
-        }
+        columns = report.get("Columns", {}).get("Column", [])
+        headers = [c.get("ColTitle", "") for c in columns]
+        if not headers:
+            headers = ["Date", "Transaction Type", "Num", "Posting", "Name",
+                        "Memo", "Account", "Class", "Amount"]
 
-    # Extract column headers from report metadata
-    columns = report.get("Columns", {}).get("Column", [])
-    headers = [c.get("ColTitle", "") for c in columns]
-    if not headers:
-        headers = ["Date", "Transaction Type", "Num", "Posting", "Name",
-                    "Memo", "Account", "Class", "Amount"]
+        data_rows = []
+        top_rows = report.get("Rows", {}).get("Row", [])
+        _extract_rows(top_rows, data_rows)
 
-    # Recursively extract all data rows
-    data_rows = []
-    top_rows = report.get("Rows", {}).get("Row", [])
-    _extract_rows(top_rows, data_rows)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(headers)
+        writer.writerows(data_rows)
+        csv_text = buf.getvalue()
 
-    # Build CSV
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(headers)
-    writer.writerows(data_rows)
-    csv_text = buf.getvalue()
-
-    return {
-        "statusCode": 200,
-        "headers": {
-            "Content-Type": "text/csv",
-            "Access-Control-Allow-Origin": "*",
-        },
-        "body": csv_text,
-    }
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(csv_text.encode())
